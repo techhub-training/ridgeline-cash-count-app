@@ -1,8 +1,11 @@
-"""Ridgeline petty cash counts (TechHub challenge 411).
+"""Ridgeline petty cash counts (TechHub challenge 411, solution).
 
-Store managers record each surprise count of a store's petty cash fund. The app works, but it saves the counts in a
-file next to the app (cash_counts.db). Streamlit Community Cloud throws that file away whenever it restarts the app.
-README.md says how to move the data to Turso so it survives."""
+Store managers record each surprise count of a store's petty cash fund. The counts are saved in a Turso database
+(hosted SQLite), so they survive when Streamlit Community Cloud restarts the app.
+Secrets (.streamlit/secrets.toml on your computer; Settings > Secrets on Streamlit Community Cloud):
+    TURSO_DATABASE_URL = "libsql://<your-database>-<your-org>.turso.io"
+    TURSO_AUTH_TOKEN = "<token>"
+"""
 import datetime as dt
 import libsql
 import pandas as pd
@@ -17,8 +20,15 @@ st.title("Ridgeline petty cash counts")
 
 
 def connect():
-    """TODO: this file disappears when Streamlit restarts the app. Connect to your Turso database instead."""
-    return libsql.connect("cash_counts.db")
+    """A Turso embedded replica: a local copy that reads fast and syncs every write to the Turso database."""
+    try:
+        url, token = st.secrets["TURSO_DATABASE_URL"], st.secrets["TURSO_AUTH_TOKEN"]
+    except Exception:
+        st.error("Add TURSO_DATABASE_URL and TURSO_AUTH_TOKEN to the app's secrets.")
+        st.stop()
+    conn = libsql.connect("replica.db", sync_url=url, auth_token=token)
+    conn.sync()
+    return conn
 
 
 conn = connect()
@@ -26,6 +36,7 @@ conn.execute("""CREATE TABLE IF NOT EXISTS cash_counts (
     id INTEGER PRIMARY KEY AUTOINCREMENT, count_date TEXT NOT NULL, store TEXT NOT NULL, counted_by TEXT NOT NULL,
     expected REAL NOT NULL, counted REAL NOT NULL)""")
 conn.commit()
+conn.sync()
 
 with st.form("count", clear_on_submit=True):
     st.subheader("Record a count")
@@ -43,6 +54,7 @@ with st.form("count", clear_on_submit=True):
             conn.execute("INSERT INTO cash_counts (count_date, store, counted_by, expected, counted) VALUES (?, ?, ?, ?, ?)",
                          (count_date.isoformat(), store, counted_by.strip(), round(expected, 2), round(counted, 2)))
             conn.commit()
+            conn.sync()
             st.success("Saved.")
 
 rows = conn.execute("""SELECT id, count_date, store, counted_by, expected, counted, ROUND(counted - expected, 2)
@@ -60,4 +72,5 @@ with st.expander("Delete a count entered by mistake"):
         if st.button("Delete"):
             conn.execute("DELETE FROM cash_counts WHERE id = ?", (int(gone),))
             conn.commit()
+            conn.sync()
             st.rerun()
