@@ -1,15 +1,17 @@
 """Ridgeline petty cash counts (TechHub challenge 411, solution).
 
-Store managers record each surprise count of a store's petty cash fund. The counts are saved in a Turso database
-(hosted SQLite), so they survive when Streamlit Community Cloud restarts the app.
-Secrets (.streamlit/secrets.toml on your computer; Settings > Secrets on Streamlit Community Cloud):
-    TURSO_DATABASE_URL = "libsql://<your-database>-<your-org>.turso.io"
-    TURSO_AUTH_TOKEN = "<token>"
+Level 3, Storage: store managers record each surprise count of a store's petty cash fund, and the counts live in a
+Supabase database (hosted PostgreSQL), so they survive when Streamlit Community Cloud restarts the app.
+
+Secrets (.streamlit/secrets.toml in your codespace; Settings > Secrets on Streamlit Community Cloud):
+    [connections.supabase]
+    url = "postgresql+psycopg2://postgres.<project-ref>:<database-password>@<pooler-host>:5432/postgres"
 """
 import datetime as dt
-import libsql
+
 import pandas as pd
 import streamlit as st
+from sqlalchemy import text
 
 STORES = ["Ridgeline Orem", "Ridgeline Lehi", "Ridgeline Ogden", "Ridgeline Logan", "Ridgeline St. George",
           "Ridgeline Park City", "Ridgeline Idaho Falls", "Ridgeline Pocatello", "Ridgeline Twin Falls",
@@ -20,23 +22,21 @@ st.title("Ridgeline petty cash counts")
 
 
 def connect():
-    """A Turso embedded replica: a local copy that reads fast and syncs every write to the Turso database."""
-    try:
-        url, token = st.secrets["TURSO_DATABASE_URL"], st.secrets["TURSO_AUTH_TOKEN"]
-    except Exception:
-        st.error("Add TURSO_DATABASE_URL and TURSO_AUTH_TOKEN to the app's secrets.")
+    """Supabase: the connection string comes from the app's secrets, never from the code."""
+    if "supabase" not in st.secrets.get("connections", {}):
+        st.error("Add a [connections.supabase] url to the app's secrets (see README.md).")
         st.stop()
-    conn = libsql.connect("replica.db", sync_url=url, auth_token=token)
-    conn.sync()
-    return conn
+    return st.connection("supabase", type="sql")
+
+
+def run(sql, **params):
+    """Change the data: one statement, with the values passed as parameters (never pasted into the SQL)."""
+    with conn.session as s:
+        s.execute(text(sql), params)
+        s.commit()
 
 
 conn = connect()
-conn.execute("""CREATE TABLE IF NOT EXISTS cash_counts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, count_date TEXT NOT NULL, store TEXT NOT NULL, counted_by TEXT NOT NULL,
-    expected REAL NOT NULL, counted REAL NOT NULL)""")
-conn.commit()
-conn.sync()
 
 with st.form("count", clear_on_submit=True):
     st.subheader("Record a count")
@@ -51,15 +51,17 @@ with st.form("count", clear_on_submit=True):
         if not counted_by.strip():
             st.warning("Enter who counted the cash.")
         else:
-            conn.execute("INSERT INTO cash_counts (count_date, store, counted_by, expected, counted) VALUES (?, ?, ?, ?, ?)",
-                         (count_date.isoformat(), store, counted_by.strip(), round(expected, 2), round(counted, 2)))
-            conn.commit()
-            conn.sync()
+            run("""INSERT INTO cash_counts (count_date, store, counted_by, expected, counted)
+                   VALUES (:count_date, :store, :counted_by, :expected, :counted)""",
+                count_date=count_date, store=store, counted_by=counted_by.strip(),
+                expected=round(expected, 2), counted=round(counted, 2))
             st.success("Saved.")
 
-rows = conn.execute("""SELECT id, count_date, store, counted_by, expected, counted, ROUND(counted - expected, 2)
-                       FROM cash_counts ORDER BY count_date, store""").fetchall()
-table = pd.DataFrame(rows, columns=["ID", "Date", "Store", "CountedBy", "Expected", "Counted", "Variance"])
+table = conn.query("""SELECT id AS "ID", count_date AS "Date", store AS "Store", counted_by AS "CountedBy",
+                             expected AS "Expected", counted AS "Counted", counted - expected AS "Variance"
+                      FROM cash_counts ORDER BY count_date, store""", ttl=0)
+for col in ("Expected", "Counted", "Variance"):
+    table[col] = table[col].astype(float).round(2)
 
 st.subheader(f"Counts on file ({len(table)})")
 st.dataframe(table, hide_index=True)
@@ -70,7 +72,5 @@ with st.expander("Delete a count entered by mistake"):
         gone = st.selectbox("Count", table["ID"], format_func=lambda i: " | ".join(
             str(x) for x in table.loc[table["ID"] == i, ["Date", "Store", "CountedBy", "Counted"]].iloc[0]))
         if st.button("Delete"):
-            conn.execute("DELETE FROM cash_counts WHERE id = ?", (int(gone),))
-            conn.commit()
-            conn.sync()
+            run("DELETE FROM cash_counts WHERE id = :id", id=int(gone))
             st.rerun()
