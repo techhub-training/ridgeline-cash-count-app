@@ -5,7 +5,7 @@ Supabase database (hosted PostgreSQL), so they survive when Streamlit Community 
 
 Secrets (.streamlit/secrets.toml in your codespace; Settings > Secrets on Streamlit Community Cloud):
     [connections.supabase]
-    url = "postgresql+psycopg2://postgres.<project-ref>:<database-password>@<pooler-host>:5432/postgres"
+    url = "postgresql://postgres.<project-ref>:<database-password>@<pooler-host>:5432/postgres"
 """
 import datetime as dt
 
